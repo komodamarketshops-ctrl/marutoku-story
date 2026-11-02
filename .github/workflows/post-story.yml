@@ -1,0 +1,59 @@
+name: ストーリーズ自動投稿
+
+on:
+  schedule:
+    # GitHubの時刻はUTC（日本時間 - 9時間）。遅延に備えて少し早めに起動し、スクリプト側で投稿時刻まで待つ
+    - cron: "40 1 * * *"   # 日本時間 10:40 起動 → 土日祝なら 11:00 に投稿
+    - cron: "40 5 * * *"   # 日本時間 14:40 起動 → 平日なら 15:00 に投稿
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry-run: 予定を表示するだけ / post-now: 今すぐ投稿（テスト）"
+        type: choice
+        options: [dry-run, post-now]
+        default: dry-run
+
+permissions:
+  contents: write
+
+concurrency: post-story
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: 投稿
+        env:
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            if [ "${{ github.event.schedule }}" = "40 1 * * *" ]; then
+              python post_story.py --slot holiday
+            else
+              python post_story.py --slot weekday
+            fi
+          elif [ "${{ inputs.mode }}" = "post-now" ]; then
+            python post_story.py --now --force
+          else
+            python post_story.py --dry-run
+          fi
+
+      # 投稿ログを残す。公開リポジトリは60日間更新がないと定期実行が止まるので、その対策も兼ねる
+      - name: ログを保存
+        if: always()
+        run: |
+          [ -f posts.log ] || exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add posts.log
+          git diff --cached --quiet || (git commit -m "投稿ログ" && git push)
